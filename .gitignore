@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment (NEVER commit API keys)
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+server.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test outputs
+coverage/
+.nyc_output/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Build outputs
+dist/
+build/

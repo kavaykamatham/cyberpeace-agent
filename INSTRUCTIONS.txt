@@ -1,0 +1,204 @@
+═══════════════════════════════════════════════════════════════════════════════
+CYBERPEACE SCAM DETECTION API - FINAL INSTRUCTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+📌 YOUR PROJECT IS READY. Follow these exact steps.
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 1: SETUP (DO THIS ONCE)
+═══════════════════════════════════════════════════════════════════════════════
+
+You should have a .env file with your API keys. If not, create one:
+
+FILE: .env
+--------
+GROQ_API_KEY=your_actual_groq_key_here
+VIRUSTOTAL_API_KEY=your_actual_virustotal_key_here
+PORT=3000
+
+(Get free keys from https://console.groq.com and https://www.virustotal.com)
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 2: START SERVER (Terminal 1)
+═══════════════════════════════════════════════════════════════════════════════
+
+In VS Code Terminal, type:
+
+node server.js
+
+EXPECTED OUTPUT:
+───────────────────────────────────────────────────────────────────────────────
+Server running on port 3000 🚀
+- POST http://localhost:3000/analyze - Analyze message for scams
+- GET http://localhost:3000/health - Server health check
+───────────────────────────────────────────────────────────────────────────────
+
+✅ If you see this, server is working. LEAVE IT RUNNING.
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 3: TEST API (Terminal 2 - NEW TERMINAL)
+═══════════════════════════════════════════════════════════════════════════════
+
+Open a NEW terminal in VS Code (don't close the first one).
+
+Test the health check first:
+
+curl http://localhost:3000/health
+
+EXPECTED OUTPUT:
+───────────────────────────────────────────────────────────────────────────────
+{"status":"ok","service":"CyberPeace Scam Detection","version":"1.0.0","timestamp":"2026-06-05T..."}
+───────────────────────────────────────────────────────────────────────────────
+
+✅ If you see JSON response, API is working.
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 4: TEST SCAM DETECTION (Terminal 2)
+═══════════════════════════════════════════════════════════════════════════════
+
+Type this command (all in one line, or copy-paste):
+
+curl -X POST http://localhost:3000/analyze -H "Content-Type: application/json" -d "{\"message\":\"Congratulations! You won $1000000! Click https://fake-lottery.com\"}"
+
+EXPECTED OUTPUT:
+───────────────────────────────────────────────────────────────────────────────
+{
+  "success": true,
+  "message": "Congratulations! You won $1000000! Click https://fake-lottery.com",
+  "extractedUrls": ["https://fake-lottery.com"],
+  "isScamQuery": true,
+  "analysis": {
+    "isScamQuery": true,
+    "scamTypes": ["lottery_scam"],
+    "confidence": 95,
+    "reason": "..."
+  },
+  "urlChecks": [...],
+  "riskExplanation": "🚨 DANGER: This is definitely a scam..."
+}
+───────────────────────────────────────────────────────────────────────────────
+
+✅ If you see "success": true and "isScamQuery": true → API IS WORKING PERFECTLY
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 5: TEST SAFE MESSAGE (Terminal 2)
+═══════════════════════════════════════════════════════════════════════════════
+
+Type:
+
+curl -X POST http://localhost:3000/analyze -H "Content-Type: application/json" -d "{\"message\":\"Check the weather today\"}"
+
+EXPECTED OUTPUT:
+───────────────────────────────────────────────────────────────────────────────
+{
+  "success": true,
+  "message": "Check the weather today",
+  "extractedUrls": [],
+  "isScamQuery": false,
+  "analysis": {
+    "isScamQuery": false,
+    "scamTypes": [],
+    "confidence": 100,
+    "reason": "This message is not asking about a scam..."
+  }
+}
+───────────────────────────────────────────────────────────────────────────────
+
+✅ If you see "isScamQuery": false → API correctly identifies safe messages
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 6: TEST PHISHING MESSAGE (Terminal 2)
+═══════════════════════════════════════════════════════════════════════════════
+
+Type:
+
+curl -X POST http://localhost:3000/analyze -H "Content-Type: application/json" -d "{\"message\":\"Verify your bank account: https://fake-banking-site.com\"}"
+
+EXPECTED OUTPUT:
+───────────────────────────────────────────────────────────────────────────────
+{
+  "success": true,
+  "message": "Verify your bank account: https://fake-banking-site.com",
+  "extractedUrls": ["https://fake-banking-site.com"],
+  "isScamQuery": true,
+  "analysis": {
+    "isScamQuery": true,
+    "scamTypes": ["phishing", "banking_fraud"],
+    "confidence": 98,
+    "reason": "..."
+  },
+  ...
+}
+───────────────────────────────────────────────────────────────────────────────
+
+✅ If you see phishing detected → API IS WORKING
+
+═══════════════════════════════════════════════════════════════════════════════
+USING IN YOUR CODE
+═══════════════════════════════════════════════════════════════════════════════
+
+Option 1: From Any Application (Node.js, Python, JavaScript, etc.)
+
+const message = "Your message here";
+const response = await fetch('http://localhost:3000/analyze', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ message })
+});
+const result = await response.json();
+console.log(result.isScamQuery); // true or false
+
+
+Option 2: From Node.js (Direct)
+
+const ChatBot = require('./classes/ChatBot');
+const bot = new ChatBot();
+const result = await bot.analyzeMessage("Your message");
+console.log(bot.getVerdict(result)); // ✅ SAFE / ⚠️ WARNING / 🚨 DANGER
+
+═══════════════════════════════════════════════════════════════════════════════
+IF YOU GET ERRORS
+═══════════════════════════════════════════════════════════════════════════════
+
+ERROR: "Connection refused"
+→ FIX: Make sure server is running in Terminal 1 (node server.js)
+
+ERROR: "Invalid API Key"
+→ FIX: Check .env file has correct GROQ_API_KEY and VIRUSTOTAL_API_KEY
+
+ERROR: "Timeout"
+→ FIX: Normal for first request. VirusTotal might be slow. Wait 5 seconds.
+
+ERROR: Port 3000 already in use
+→ FIX: Change PORT=3001 in .env file, restart server
+
+═══════════════════════════════════════════════════════════════════════════════
+YOUR PROJECT FILES
+═══════════════════════════════════════════════════════════════════════════════
+
+server.js                 ← Main server file
+package.json             ← Dependencies
+.env                     ← Your API keys (SECRET - don't share!)
+.env.example             ← Template
+
+routes/
+  └── analyze.js         ← Main API endpoint
+
+services/
+  ├── groqService.js     ← AI scam detection
+  └── virusTotalService.js ← URL scanning
+
+utils/
+  └── extractUrl.js      ← Extract URLs from text
+
+classes/
+  └── ChatBot.js         ← Reusable bot class
+
+═══════════════════════════════════════════════════════════════════════════════
+THAT'S IT! YOUR API IS READY TO USE.
+═══════════════════════════════════════════════════════════════════════════════
+
+Keep server running in Terminal 1.
+Test and use API from Terminal 2 or from your application.
+
+Happy detecting! 🚀
