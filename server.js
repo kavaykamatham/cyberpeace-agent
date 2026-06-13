@@ -51,6 +51,7 @@ app.post("/analyze/whatsapp", async (req, res) => {
     const start = Date.now();
     try {
         const message = (req.body?.message || "").trim();
+        console.log("[/analyze/whatsapp] Received message:", message);
         console.log(`\n[whatsapp] "${message.substring(0, 80)}"`);
 
         if (message.length < 2) {
