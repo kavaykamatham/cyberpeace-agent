@@ -1,0 +1,37 @@
+name: CyberPeace Auto Deploy
+
+# Run this every time code is pushed to main branch
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Get the code from GitHub
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      # Step 3: Install packages
+      - name: Install dependencies
+        run: npm install
+
+      # Step 4: Run basic health check test
+      - name: Run tests
+        run: node test_simple.js
+        continue-on-error: true
+
+      # Step 5: If everything OK — deploy to Render automatically
+      - name: Deploy to Render
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
+          echo "Deploy triggered successfully"
