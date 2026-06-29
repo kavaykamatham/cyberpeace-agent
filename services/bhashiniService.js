@@ -48,8 +48,15 @@ function isConfigured() {
 
 // ── Step A: Get pipeline config (serviceId) for a task ───────────────────────
 async function getPipelineConfig(taskType, sourceLanguage, targetLanguage = null) {
-    const task = { taskType, sourceLanguage };
-    if (targetLanguage) task.targetLanguage = targetLanguage;
+    
+    const task = { taskType };
+    if (sourceLanguage) {
+        task.sourceLanguage = sourceLanguage;
+    }
+    if (targetLanguage) {
+    task.targetLanguage = targetLanguage;
+    }
+
 
     const response = await axios.post(
         BHASHINI_CONFIG_URL,
