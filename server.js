@@ -2,86 +2,133 @@ require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 const http    = require("http");
+const axios   = require("axios");
 
 const analyzeRoute = require("./routes/analyze");
-const { analyzeScamIntent, explainRisk } = require("./services/groqService");
-const { checkUrl }                        = require("./services/virusTotalService");
-const { extractUrl }                      = require("./utils/extractUrl");
+const { analyzeScamIntent, explainRisk }         = require("./services/groqService");
+const { checkUrl }                                = require("./services/virusTotalService");
+const { extractUrl }                              = require("./utils/extractUrl");
 const { checkSuspiciousText, checkLotteryScamText, overallRiskAssessment } = require("./utils/phishingDetector");
-const config = require("./config/detectionLists");
+const config    = require("./config/detectionLists");
+const bhashini  = require("./services/bhashiniService");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" })); // larger limit for base64 audio
 
-// ── Health check ──────────────────────────────────────────────────────────
+// ── Health check ──────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.send("CyberPeace Scam Detection API Running ✅"));
 
 app.get("/health", (req, res) => res.json({
-    status:    "ok",
-    service:   "CyberPeace Scam Detection",
-    version:   "2.0.0",
-    timestamp: new Date()
+    status:             "ok",
+    service:            "CyberPeace Scam Detection",
+    version:            "3.0.0",
+    bhashiniConfigured: bhashini.isConfigured(),
+    timestamp:          new Date()
 }));
 
-// ── Keep-alive: ping own /health every 14 minutes ─────────────────────────
-// Prevents Render free tier from sleeping — keeps server warm for Turn.io
+// ── Keep-alive: ping own /health every 14 minutes ────────────────────────────
 function selfPing() {
-    http.get(`http://localhost:${PORT}/health`, (res) => {
+    http.get(`http://localhost:${PORT}/health`, () => {
         console.log(`[keep-alive] ping OK — ${new Date().toISOString()}`);
     }).on("error", (e) => {
         console.log(`[keep-alive] ping failed: ${e.message}`);
     });
 }
-// Start pinging 2 minutes after boot, then every 14 minutes
 setTimeout(() => {
     selfPing();
     setInterval(selfPing, 14 * 60 * 1000);
 }, 2 * 60 * 1000);
 
-// ── Main routes ───────────────────────────────────────────────────────────
+// ── Main analysis routes ──────────────────────────────────────────────────────
 app.use("/analyze", analyzeRoute);
 
-// ── /analyze/whatsapp — Turn.io endpoint ─────────────────────────────────
+// ── /analyze/whatsapp — Turn.io endpoint ─────────────────────────────────────
+// Handles both text and voice messages
+// Supports all Indian languages via Bhashini
 // Must respond within 20 seconds (Turn.io hard limit)
-// Calls services directly — no internal HTTP round-trip
 app.post("/analyze/whatsapp", async (req, res) => {
     const start = Date.now();
     try {
-        const message = (req.body?.message || "").trim();
-        console.log("[/analyze/whatsapp] Received message:", message);
-        console.log(`\n[whatsapp] "${message.substring(0, 80)}"`);
+        const body        = req.body || {};
+        const rawMessage  = (body.message || "").trim();
+        const audioBase64 = body.audio   || null;   // base64 audio for voice messages
+        const audioLang   = body.audioLanguage || "hi"; // language hint for voice
 
-        if (message.length < 2) {
+        console.log(`\n[whatsapp] message="${rawMessage.substring(0,80)}" | hasAudio=${!!audioBase64}`);
+
+        if (!rawMessage && !audioBase64) {
             return res.json({
                 whatsappMessage: "Please send a message, URL, or suspicious text to check."
             });
         }
 
-        // Step 1: Extract URLs
-        const urls = extractUrl(message);
+        // ── Step 1: Convert voice to text if audio is provided ────────────────
+        let inputText = rawMessage;
+        let sourceLang = "en";
 
-        // Step 2: Local pattern check — instant
-        const localRisk = overallRiskAssessment(message);
+        if (audioBase64) {
+            try {
+                console.log(`[1] Converting voice to text (lang: ${audioLang})...`);
+                inputText  = await bhashini.speechToText(audioBase64, audioLang);
+                sourceLang = audioLang;
+                console.log(`[1] Transcript: "${inputText.substring(0, 80)}" @ ${Date.now()-start}ms`);
+            } catch (asrErr) {
+                console.error("[1] ASR failed:", asrErr.message);
+                return res.json({
+                    whatsappMessage: "Sorry, I could not understand the voice message. Please try sending as text."
+                });
+            }
+        }
 
-        // Step 3: Groq AI — ~1-2 seconds
-        const groqResult = await analyzeScamIntent(message);
+        if (!inputText || inputText.length < 2) {
+            return res.json({
+                whatsappMessage: "Message is too short to analyze. Please send more details."
+            });
+        }
+
+        // ── Step 2: Detect language and translate to English ──────────────────
+        let englishText = inputText;
+        if (!audioBase64) {
+            // For text messages detect language automatically
+            console.log("[2] Detecting language and translating to English...");
+            const result = await bhashini.toEnglish(inputText);
+            englishText  = result.englishText;
+            sourceLang   = result.sourceLang;
+            console.log(`[2] Source lang: ${sourceLang} | English: "${englishText.substring(0,80)}" @ ${Date.now()-start}ms`);
+        } else {
+            // For voice, translate the transcript to English
+            if (sourceLang !== "en") {
+                englishText = await bhashini.translateText(inputText, sourceLang, "en");
+                console.log(`[2] Translated voice: "${englishText.substring(0,80)}" @ ${Date.now()-start}ms`);
+            }
+        }
+
+        // ── Step 3: Extract URLs from English text ────────────────────────────
+        const urls = extractUrl(englishText);
+        console.log(`[3] URLs found: ${urls.length}`, urls);
+
+        // ── Step 4: Local pattern check — instant ─────────────────────────────
+        const localRisk = overallRiskAssessment(englishText);
+
+        // ── Step 5: Groq AI analysis ──────────────────────────────────────────
+        const groqResult = await analyzeScamIntent(englishText);
         const groqFailed = groqResult.fallback === true;
-        console.log(`[whatsapp] Groq: ${groqResult.isScamQuery} (${groqResult.confidence}%) @ ${Date.now()-start}ms`);
+        console.log(`[5] Groq: ${groqResult.isScamQuery} (${groqResult.confidence}%) @ ${Date.now()-start}ms`);
 
-        // Step 4: VirusTotal — scan first URL only (to stay within 20s)
+        // ── Step 6: VirusTotal — scan first URL only (stay within 20s) ────────
         let vtVerdict = null;
         let urlChecks = [];
         if (urls.length > 0) {
             const vt = await checkUrl(urls[0]);
             vtVerdict = vt.verdict;
             urlChecks.push({ url: urls[0], virusTotalData: vt });
-            console.log(`[whatsapp] VT: ${vtVerdict} @ ${Date.now()-start}ms`);
+            console.log(`[6] VT: ${vtVerdict} @ ${Date.now()-start}ms`);
         }
 
-        // Step 5: Brand impersonation check
+        // ── Step 7: Brand impersonation check ─────────────────────────────────
         let brandImpersonation = false;
         for (const u of urls) {
             try {
@@ -94,9 +141,9 @@ app.post("/analyze/whatsapp", async (req, res) => {
             } catch {}
         }
 
-        // Step 6: Final verdict
+        // ── Step 8: Final verdict ─────────────────────────────────────────────
         let finalVerdict = "SAFE";
-        const localScore = localRisk.overallRiskScore || 0;
+        const localScore       = localRisk.overallRiskScore || 0;
         const dangerThreshold  = groqFailed ? 55 : 65;
         const warningThreshold = groqFailed ? 30 : 35;
 
@@ -114,7 +161,7 @@ app.post("/analyze/whatsapp", async (req, res) => {
             finalVerdict = "WARNING";
         }
 
-        // Trusted domain override — never flag verified real domains
+        // Trusted domain override
         const allTrusted = urls.length > 0 && urls.every(u => {
             try {
                 const h = new URL(u).hostname.toLowerCase().replace(/^www\./, "");
@@ -125,29 +172,43 @@ app.post("/analyze/whatsapp", async (req, res) => {
             finalVerdict = "SAFE";
         }
 
-        // Step 7: Explanation
+        // ── Step 9: Build English explanation ────────────────────────────────
         let explanation = groqResult.reason || "";
         try {
             if (urls.length > 0) {
-                explanation = await explainRisk(message, urlChecks, finalVerdict, false);
+                explanation = await explainRisk(englishText, urlChecks, finalVerdict, false);
             }
         } catch {}
 
-        // Step 8: Format reply
+        // ── Step 10: Format English reply ────────────────────────────────────
         const scamTypes = (groqResult.scamTypes || []).map(t => t.replace(/_/g, " ")).join(", ");
         const typeLine  = scamTypes ? `Type: ${scamTypes}\n\n` : "";
 
-        let whatsappMessage;
+        let englishReply;
         if (finalVerdict === "DANGER") {
-            whatsappMessage = `DANGER - This is a SCAM!\n\n${typeLine}${explanation}\n\nDo NOT click any links or share personal details.\n\n- CyberPeace Scam Detector`;
+            englishReply = `DANGER - This is a SCAM!\n\n${typeLine}${explanation}\n\nDo NOT click any links or share personal details.\n\n- CyberPeace Scam Detector`;
         } else if (finalVerdict === "WARNING") {
-            whatsappMessage = `WARNING - Be careful!\n\n${typeLine}${explanation}\n\nVerify with the official source before clicking anything.\n\n- CyberPeace Scam Detector`;
+            englishReply = `WARNING - Be careful!\n\n${typeLine}${explanation}\n\nVerify with the official source before clicking anything.\n\n- CyberPeace Scam Detector`;
         } else {
-            whatsappMessage = `SAFE - No threats detected.\n\n${explanation || "This message appears to be legitimate."}\n\n- CyberPeace Scam Detector`;
+            englishReply = `SAFE - No threats detected.\n\n${explanation || "This message appears to be legitimate."}\n\n- CyberPeace Scam Detector`;
         }
 
-        console.log(`[whatsapp] Done: ${finalVerdict} @ ${Date.now()-start}ms`);
-        res.json({ whatsappMessage, verdict: finalVerdict });
+        // ── Step 11: Translate reply back to user's language ─────────────────
+        let whatsappMessage = englishReply;
+        if (sourceLang && sourceLang !== "en") {
+            console.log(`[11] Translating reply to ${sourceLang}...`);
+            try {
+                whatsappMessage = await bhashini.fromEnglish(englishReply, sourceLang);
+                console.log(`[11] Translated reply @ ${Date.now()-start}ms`);
+            } catch (transErr) {
+                console.error("[11] Translation failed, sending English:", transErr.message);
+                // fallback: send English reply
+                whatsappMessage = englishReply;
+            }
+        }
+
+        console.log(`[whatsapp] Done: ${finalVerdict} | lang: ${sourceLang} @ ${Date.now()-start}ms`);
+        res.json({ whatsappMessage, verdict: finalVerdict, detectedLanguage: sourceLang });
 
     } catch (err) {
         console.error(`[whatsapp] Error @ ${Date.now()-start}ms:`, err.message);
@@ -163,7 +224,8 @@ app.use((req, res) => res.status(404).json({ success: false, error: "Endpoint no
 app.listen(PORT, () => {
     console.log(`\nServer running on port ${PORT}`);
     console.log(`- POST /analyze          — full analysis`);
-    console.log(`- POST /analyze/whatsapp — Turn.io (fast, <20s)`);
+    console.log(`- POST /analyze/whatsapp — Turn.io (multilingual, voice + text)`);
     console.log(`- GET  /health           — health check`);
+    console.log(`Bhashini configured: ${bhashini.isConfigured()}`);
     console.log(`Keep-alive ping starts in 2 minutes\n`);
 });
