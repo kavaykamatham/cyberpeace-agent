@@ -28,10 +28,15 @@ const LANG_CODES = {
 
 // Full name (any case) → short code — handles what Turn.io sends
 const NAME_TO_CODE = {
+    // Full names
     "hindi": "hi", "tamil": "ta", "telugu": "te", "bengali": "bn",
     "marathi": "mr", "gujarati": "gu", "kannada": "kn", "malayalam": "ml",
     "punjabi": "pa", "odia": "or", "oriya": "or", "assamese": "as",
-    "urdu": "ur", "english": "en"
+    "urdu": "ur", "english": "en",
+    // WhatsApp Business API 3-letter codes (Turn.io sometimes uses these)
+    "hin": "hi", "tam": "ta", "tel": "te", "ben": "bn",
+    "mar": "mr", "guj": "gu", "kan": "kn", "mal": "ml",
+    "pan": "pa", "ori": "or", "asm": "as", "urd": "ur", "eng": "en"
 };
 
 // ── Convert whatever Turn.io sends ("Telugu", "telugu", "te") → short code ──
