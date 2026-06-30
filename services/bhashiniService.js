@@ -8,6 +8,10 @@
 //    (saved to their profile field as a FULL WORD like "Telugu", "Hindi").
 // 2. Added a name-to-code converter since Turn.io profile stores full
 //    language names, but Bhashini's API needs short ISO codes like "te", "hi".
+// 3. FIX (per Shivanshu): pipelineTasks[] must ONLY contain taskType and
+//    config — no "input" field inside each task. The actual text goes only
+//    in the top-level inputData.input array. The old code was incorrectly
+//    nesting input inside pipelineTasks, which Bhashini rejected.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const axios = require("axios");
@@ -97,20 +101,26 @@ async function getPipelineConfig(taskType, sourceLanguage, targetLanguage = null
     return { serviceId, callbackUrl, inferenceApiKey };
 }
 
-async function runPipeline(callbackUrl, inferenceApiKey, pipelineTasks) {
-    // TEST MODE: force using the STATIC key from .env (given by manager)
-    // instead of the DYNAMIC key auto-returned by the Config call.
-    // Toggle this back to `inferenceApiKey || INFER_KEY` if this doesn't help.
-    const keyToUse = INFER_KEY || inferenceApiKey;
+// pipelineTasks: array of { taskType, config } — NO input field inside tasks
+// inputText: the actual text/audio to process — sent separately as inputData
+async function runPipeline(callbackUrl, inferenceApiKey, pipelineTasks, inputText) {
+    // Strip any stray "input" key from each task — Bhashini only wants
+    // taskType and config inside pipelineTasks. Text goes only in inputData.
+    const cleanTasks = pipelineTasks.map(({ taskType, config }) => ({ taskType, config }));
 
-    console.log(`[Bhashini] Using ${INFER_KEY ? "STATIC (manager-provided)" : "DYNAMIC (auto-returned)"} inference key`);
+    const requestBody = {
+        pipelineTasks: cleanTasks,
+        inputData: {
+            input: [{ source: inputText }]
+        }
+    };
 
     const response = await axios.post(
         callbackUrl || BHASHINI_COMPUTE_URL,
-        { pipelineTasks, inputData: pipelineTasks[0].input },
+        requestBody,
         {
             headers: {
-                "Authorization": keyToUse,
+                "Authorization": inferenceApiKey || INFER_KEY,
                 "Content-Type":  "application/json"
             },
             timeout: 15000
@@ -142,11 +152,14 @@ async function translateText(text, sourceLanguage, targetLanguage) {
             "translation", srcCode, tgtCode
         );
 
-        const result = await runPipeline(callbackUrl, inferenceApiKey, [{
-            taskType:  "translation",
-            config:    { serviceId, language: { sourceLanguage: srcCode, targetLanguage: tgtCode } },
-            input:     [{ source: text }]
-        }]);
+        const result = await runPipeline(
+            callbackUrl, inferenceApiKey,
+            [{
+                taskType: "translation",
+                config:   { serviceId, language: { sourceLanguage: srcCode, targetLanguage: tgtCode } }
+            }],
+            text
+        );
 
         const translated = result?.pipelineResponse?.[0]?.output?.[0]?.target;
         if (!translated) throw new Error("No translation output received");
@@ -168,11 +181,29 @@ async function speechToText(audioBase64, language = "hi") {
     const code = normalizeLanguage(language);
     const { serviceId, callbackUrl, inferenceApiKey } = await getPipelineConfig("asr", code);
 
-    const result = await runPipeline(callbackUrl, inferenceApiKey, [{
-        taskType:  "asr",
-        config:    { serviceId, language: { sourceLanguage: code } },
-        audio:     [{ audioContent: audioBase64 }]
-    }]);
+    // ASR uses audio input — different inputData shape than text translation
+    const asrRequestBody = {
+        pipelineTasks: [{
+            taskType: "asr",
+            config:   { serviceId, language: { sourceLanguage: code } }
+        }],
+        inputData: {
+            audio: [{ audioContent: audioBase64 }]
+        }
+    };
+
+    const asrResponse = await axios.post(
+        callbackUrl || BHASHINI_COMPUTE_URL,
+        asrRequestBody,
+        {
+            headers: {
+                "Authorization": inferenceApiKey || INFER_KEY,
+                "Content-Type":  "application/json"
+            },
+            timeout: 15000
+        }
+    );
+    const result = asrResponse.data;
 
     const transcript = result?.pipelineResponse?.[0]?.output?.[0]?.source;
     if (!transcript) throw new Error("No transcript returned from Bhashini ASR");
