@@ -1,6 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // services/bhashiniService.js
-// DEBUG VERSION — logs the full error response from Bhashini for diagnosis
+// FIXED VERSION
+//
+// Root cause found: "txt_lang_detection" is NOT a valid taskType in Bhashini's
+// pipeline config/compute API. The only valid taskTypes are: asr, translation, tts.
+// Language detection is a separate, different service — not available through
+// this pipeline with our current credentials.
+//
+// FIX: Since the WhatsApp journey already lets the user pick their language
+// (via Turn.io's language selector / profile field), we use THAT language
+// directly instead of trying to auto-detect it with Bhashini.
+// This removes the broken detectLanguage() dependency entirely from the
+// main flow, while keeping translation (which uses valid "translation" taskType).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const axios = require("axios");
@@ -22,107 +33,77 @@ function isConfigured() {
     return !!(USER_ID && ULCA_API_KEY && INFER_KEY);
 }
 
+// ── Get pipeline config — ONLY for valid taskTypes: asr, translation, tts ───
 async function getPipelineConfig(taskType, sourceLanguage, targetLanguage = null) {
+    if (!["asr", "translation", "tts"].includes(taskType)) {
+        throw new Error(`Invalid taskType "${taskType}". Bhashini only supports: asr, translation, tts`);
+    }
+
     const task = { taskType };
     if (sourceLanguage) task.sourceLanguage = sourceLanguage;
     if (targetLanguage) task.targetLanguage = targetLanguage;
 
-    try {
-        const response = await axios.post(
-            BHASHINI_CONFIG_URL,
-            {
-                pipelineTasks:        [task],
-                pipelineRequestConfig: { pipelineId: "64392f96daac500b55c543cd" }
-            },
-            {
-                headers: {
-                    "userID":     USER_ID,
-                    "ulcaApiKey": ULCA_API_KEY,
-                    "Content-Type": "application/json"
-                },
-                timeout: 10000
-            }
-        );
-
-        const pipelineConfig = response.data?.pipelineResponseConfig?.[0];
-        if (!pipelineConfig) throw new Error("No pipeline config returned from Bhashini");
-
-        const serviceId       = pipelineConfig.config?.[0]?.serviceId;
-        const callbackUrl     = response.data?.pipelineInferenceAPIEndPoint?.callbackUrl;
-        const inferenceApiKey = response.data?.pipelineInferenceAPIEndPoint?.inferenceApiKey?.value;
-
-        if (!serviceId) throw new Error("No serviceId in Bhashini pipeline config");
-
-        return { serviceId, callbackUrl, inferenceApiKey };
-
-    } catch (err) {
-        // ── DEBUG: print the FULL error response from Bhashini ──────────────
-        console.error("\n========== BHASHINI ERROR DETAIL ==========");
-        console.error("Status code:", err.response?.status);
-        console.error("Response body:", JSON.stringify(err.response?.data, null, 2));
-        console.error("Request body sent:", JSON.stringify({
-            pipelineTasks: [task],
+    const response = await axios.post(
+        BHASHINI_CONFIG_URL,
+        {
+            pipelineTasks:        [task],
             pipelineRequestConfig: { pipelineId: "64392f96daac500b55c543cd" }
-        }, null, 2));
-        console.error("Headers sent (keys masked):", {
-            userID:     USER_ID ? USER_ID.substring(0, 6) + "..." : "MISSING",
-            ulcaApiKey: ULCA_API_KEY ? ULCA_API_KEY.substring(0, 6) + "..." : "MISSING"
-        });
-        console.error("=============================================\n");
-        throw err;
-    }
+        },
+        {
+            headers: {
+                "userID":     USER_ID,
+                "ulcaApiKey": ULCA_API_KEY,
+                "Content-Type": "application/json"
+            },
+            timeout: 10000
+        }
+    );
+
+    const pipelineConfig = response.data?.pipelineResponseConfig?.[0];
+    if (!pipelineConfig) throw new Error("No pipeline config returned from Bhashini");
+
+    const serviceId       = pipelineConfig.config?.[0]?.serviceId;
+    const callbackUrl     = response.data?.pipelineInferenceAPIEndPoint?.callbackUrl;
+    const inferenceApiKey = response.data?.pipelineInferenceAPIEndPoint?.inferenceApiKey?.value;
+
+    if (!serviceId) throw new Error("No serviceId in Bhashini pipeline config");
+
+    return { serviceId, callbackUrl, inferenceApiKey };
 }
 
 async function runPipeline(callbackUrl, inferenceApiKey, pipelineTasks) {
-    try {
-        const response = await axios.post(
-            callbackUrl || BHASHINI_COMPUTE_URL,
-            { pipelineTasks, inputData: pipelineTasks[0].input },
-            {
-                headers: {
-                    "Authorization": inferenceApiKey || INFER_KEY,
-                    "Content-Type":  "application/json"
-                },
-                timeout: 15000
-            }
-        );
-        return response.data;
-    } catch (err) {
-        console.error("\n========== BHASHINI COMPUTE ERROR ==========");
-        console.error("Status code:", err.response?.status);
-        console.error("Response body:", JSON.stringify(err.response?.data, null, 2));
-        console.error("==============================================\n");
-        throw err;
-    }
+    const response = await axios.post(
+        callbackUrl || BHASHINI_COMPUTE_URL,
+        { pipelineTasks, inputData: pipelineTasks[0].input },
+        {
+            headers: {
+                "Authorization": inferenceApiKey || INFER_KEY,
+                "Content-Type":  "application/json"
+            },
+            timeout: 15000
+        }
+    );
+    return response.data;
 }
 
-async function detectLanguage(text) {
-    if (!isConfigured()) {
-        console.log("[Bhashini] Keys not configured — assuming English");
-        return "en";
+// ── detectLanguage — REMOVED dependency on broken txt_lang_detection ────────
+// This taskType does not exist in Bhashini's pipeline API.
+// We now rely on the language the USER SELECTED in the Turn.io journey
+// (passed in as `knownLang` parameter) instead of auto-detecting it.
+// If no language is provided, we default to English (safe fallback).
+async function detectLanguage(text, knownLang = null) {
+    if (knownLang && LANG_CODES[knownLang]) {
+        console.log(`[Bhashini] Using user-selected language: ${knownLang} (${LANG_CODES[knownLang]})`);
+        return knownLang;
     }
-
-    try {
-        const { serviceId, callbackUrl, inferenceApiKey } = await getPipelineConfig("txt_lang_detection", "");
-
-        const result = await runPipeline(callbackUrl, inferenceApiKey, [{
-            taskType:  "txt_lang_detection",
-            config:    { serviceId },
-            input:     [{ source: text }]
-        }]);
-
-        const langCode = result?.pipelineResponse?.[0]?.output?.[0]?.langPrediction?.[0]?.langCode || "en";
-        console.log(`[Bhashini] Detected language: ${langCode} (${LANG_CODES[langCode] || langCode})`);
-        return langCode;
-
-    } catch (err) {
-        console.error("[Bhashini/detectLanguage] Error:", err.message, "— assuming English");
-        return "en";
-    }
+    console.log("[Bhashini] No language provided — defaulting to English");
+    return "en";
 }
 
+// ── Translate text — uses VALID taskType "translation" ─────────────────────
 async function translateText(text, sourceLanguage, targetLanguage) {
     if (sourceLanguage === targetLanguage) return text;
+
     if (!isConfigured()) {
         console.log("[Bhashini] Keys not configured — returning original text");
         return text;
@@ -146,30 +127,38 @@ async function translateText(text, sourceLanguage, targetLanguage) {
         return translated;
 
     } catch (err) {
-        console.error("[Bhashini/translateText] Error:", err.message, "— returning original");
+        console.error("[Bhashini/translateText] Error:", err.response?.data || err.message, "— returning original");
         return text;
     }
 }
 
+// ── Voice/Audio to text (ASR) — uses VALID taskType "asr" ───────────────────
 async function speechToText(audioBase64, language = "hi") {
     if (!isConfigured()) {
         throw new Error("Bhashini keys not configured. Cannot process voice messages.");
     }
+
     const { serviceId, callbackUrl, inferenceApiKey } = await getPipelineConfig("asr", language);
+
     const result = await runPipeline(callbackUrl, inferenceApiKey, [{
         taskType:  "asr",
         config:    { serviceId, language: { sourceLanguage: language } },
         audio:     [{ audioContent: audioBase64 }]
     }]);
+
     const transcript = result?.pipelineResponse?.[0]?.output?.[0]?.source;
     if (!transcript) throw new Error("No transcript returned from Bhashini ASR");
+
     console.log(`[Bhashini] ASR (${language}): "${transcript.substring(0, 80)}"`);
     return transcript;
 }
 
-async function toEnglish(text) {
-    const sourceLang = await detectLanguage(text);
+// ── Full pipeline: get language (from profile) + translate to English ──────
+// knownLang: the language the user already selected in Turn.io (profile field)
+async function toEnglish(text, knownLang = null) {
+    const sourceLang = await detectLanguage(text, knownLang);
     if (sourceLang === "en") return { englishText: text, sourceLang: "en" };
+
     const englishText = await translateText(text, sourceLang, "en");
     return { englishText, sourceLang };
 }
