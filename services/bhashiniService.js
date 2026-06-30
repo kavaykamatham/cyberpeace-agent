@@ -98,12 +98,19 @@ async function getPipelineConfig(taskType, sourceLanguage, targetLanguage = null
 }
 
 async function runPipeline(callbackUrl, inferenceApiKey, pipelineTasks) {
+    // TEST MODE: force using the STATIC key from .env (given by manager)
+    // instead of the DYNAMIC key auto-returned by the Config call.
+    // Toggle this back to `inferenceApiKey || INFER_KEY` if this doesn't help.
+    const keyToUse = INFER_KEY || inferenceApiKey;
+
+    console.log(`[Bhashini] Using ${INFER_KEY ? "STATIC (manager-provided)" : "DYNAMIC (auto-returned)"} inference key`);
+
     const response = await axios.post(
         callbackUrl || BHASHINI_COMPUTE_URL,
         { pipelineTasks, inputData: pipelineTasks[0].input },
         {
             headers: {
-                "Authorization": inferenceApiKey || INFER_KEY,
+                "Authorization": keyToUse,
                 "Content-Type":  "application/json"
             },
             timeout: 15000
